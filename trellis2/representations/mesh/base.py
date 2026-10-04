@@ -32,12 +32,54 @@ class Mesh:
     def cpu(self):
         return self.to('cpu')
     
-    def fill_holes(self, max_hole_perimeter=3e-2):
+    def unify_face_orientations(self, outward=True):
+        """
+        Make the winding of the faces consistent (CuMesh.unify_face_orientations), and with ``outward`` flip every connected piece whose signed volume is
+        negative so that normals point out of the solid.  The mesh built from the flexible dual grid has a large share of edges whose two faces are
+        wound the opposite way (millions on a 1024^3 generation), which shows up as dark / missing faces with backface culling or one-sided lighting.
+        """
+        vertices = self.vertices.cuda()
+        faces = self.faces.cuda()
+
+        mesh = cumesh.CuMesh()
+        mesh.init(vertices, faces)
+        mesh.unify_face_orientations()
+        vertices, faces = mesh.read()
+        if outward:
+            mesh = cumesh.CuMesh()
+            mesh.init(vertices, faces)
+            mesh.get_connected_components()
+            num_components, component = mesh.read_connected_components()
+            component = component.long()
+            p = vertices[faces.long()].double()                                        # (F, 3, 3)
+            signed_volume = (p[:, 0] * torch.cross(p[:, 1], p[:, 2], dim=-1)).sum(-1) / 6.0
+            total = torch.zeros(num_components, dtype=torch.float64, device=vertices.device).scatter_add_(0, component, signed_volume)
+            flip = total[component] < 0
+            faces = torch.where(flip[:, None], faces[:, [0, 2, 1]], faces)
+
+        self.vertices = vertices.to(self.device)
+        self.faces = faces.to(self.device)
+
+    def fill_holes(self, max_hole_perimeter=3e-2, repair_non_manifold=True):
+        """
+        Fill small holes.
+
+        CuMesh can only trace (and therefore fill) boundary loops that are manifold.  The mesh built from the flexible dual grid
+        contains many edges shared by more than two faces, and the small holes ("pinholes") of generated meshes sit on them, so
+        without a repair most of them are never filled.  With ``repair_non_manifold`` (default) those edges are first resolved by
+        splitting vertices (``CuMesh.repair_non_manifold_edges``, positions are unchanged) so that every boundary loop can be traced.
+
+        Args:
+            max_hole_perimeter: the maximum perimeter of a hole to fill.
+            repair_non_manifold: split vertices on non-manifold edges before tracing the boundaries.
+        """
         vertices = self.vertices.cuda()
         faces = self.faces.cuda()
         
         mesh = cumesh.CuMesh()
         mesh.init(vertices, faces)
+        if repair_non_manifold:
+            mesh.repair_non_manifold_edges()
         mesh.get_edges()
         mesh.get_boundary_info()
         if mesh.num_boundaries == 0:
