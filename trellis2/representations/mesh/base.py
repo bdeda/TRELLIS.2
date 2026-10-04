@@ -32,12 +32,26 @@ class Mesh:
     def cpu(self):
         return self.to('cpu')
     
-    def fill_holes(self, max_hole_perimeter=3e-2):
+    def fill_holes(self, max_hole_perimeter=3e-2, repair_non_manifold=True):
+        """
+        Fill small holes.
+
+        CuMesh can only trace (and therefore fill) boundary loops that are manifold.  The mesh built from the flexible dual grid
+        contains many edges shared by more than two faces, and the small holes ("pinholes") of generated meshes sit on them, so
+        without a repair most of them are never filled.  With ``repair_non_manifold`` (default) those edges are first resolved by
+        splitting vertices (``CuMesh.repair_non_manifold_edges``, positions are unchanged) so that every boundary loop can be traced.
+
+        Args:
+            max_hole_perimeter: the maximum perimeter of a hole to fill.
+            repair_non_manifold: split vertices on non-manifold edges before tracing the boundaries.
+        """
         vertices = self.vertices.cuda()
         faces = self.faces.cuda()
         
         mesh = cumesh.CuMesh()
         mesh.init(vertices, faces)
+        if repair_non_manifold:
+            mesh.repair_non_manifold_edges()
         mesh.get_edges()
         mesh.get_boundary_info()
         if mesh.num_boundaries == 0:
