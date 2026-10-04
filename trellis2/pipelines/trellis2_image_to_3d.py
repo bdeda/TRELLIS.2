@@ -472,6 +472,7 @@ class Trellis2ImageTo3DPipeline(Pipeline):
         out_mesh = []
         for m, v in zip(meshes, tex_voxels):
             m.fill_holes()
+            m.unify_face_orientations()
             out_mesh.append(
                 MeshWithVoxel(
                     m.vertices, m.faces,

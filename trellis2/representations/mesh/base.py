@@ -32,6 +32,34 @@ class Mesh:
     def cpu(self):
         return self.to('cpu')
     
+    def unify_face_orientations(self, outward=True):
+        """
+        Make the winding of the faces consistent (CuMesh.unify_face_orientations), and with ``outward`` flip every connected piece whose signed volume is
+        negative so that normals point out of the solid.  The mesh built from the flexible dual grid has a large share of edges whose two faces are
+        wound the opposite way (millions on a 1024^3 generation), which shows up as dark / missing faces with backface culling or one-sided lighting.
+        """
+        vertices = self.vertices.cuda()
+        faces = self.faces.cuda()
+
+        mesh = cumesh.CuMesh()
+        mesh.init(vertices, faces)
+        mesh.unify_face_orientations()
+        vertices, faces = mesh.read()
+        if outward:
+            mesh = cumesh.CuMesh()
+            mesh.init(vertices, faces)
+            mesh.get_connected_components()
+            num_components, component = mesh.read_connected_components()
+            component = component.long()
+            p = vertices[faces.long()].double()                                        # (F, 3, 3)
+            signed_volume = (p[:, 0] * torch.cross(p[:, 1], p[:, 2], dim=-1)).sum(-1) / 6.0
+            total = torch.zeros(num_components, dtype=torch.float64, device=vertices.device).scatter_add_(0, component, signed_volume)
+            flip = total[component] < 0
+            faces = torch.where(flip[:, None], faces[:, [0, 2, 1]], faces)
+
+        self.vertices = vertices.to(self.device)
+        self.faces = faces.to(self.device)
+
     def fill_holes(self, max_hole_perimeter=3e-2, repair_non_manifold=True):
         """
         Fill small holes.
